@@ -19,26 +19,53 @@ const RENDERS_DIR = "/app/renders";
 fs.mkdirSync(VIDEO_DIR, { recursive: true });
 fs.mkdirSync(RENDERS_DIR, { recursive: true });
 
-function ensureStarter() {
-  const files = fs.readdirSync(VIDEO_DIR);
-  if (files.length > 0) return;
-  console.log("[gateway] /app/video empty — running `hyperframes init my-video` scaffold...");
+function hasComposition() {
   try {
-    execFileSync("npx", ["--yes", "hyperframes", "init", "my-video"], {
-      cwd: "/app",
-      timeout: 120000,
-      stdio: "inherit",
-    });
-    const src = "/app/my-video";
-    if (fs.existsSync(src)) {
-      for (const f of fs.readdirSync(src)) {
-        fs.renameSync(path.join(src, f), path.join(VIDEO_DIR, f));
-      }
-      fs.rmdirSync(src);
+    const files = fs.readdirSync(VIDEO_DIR);
+    if (files.includes("index.html")) return true;
+    // nested project dir (e.g. my-video/index.html)
+    for (const f of files) {
+      const p = path.join(VIDEO_DIR, f);
+      try {
+        if (fs.statSync(p).isDirectory() && fs.existsSync(path.join(p, "index.html"))) return true;
+      } catch {}
     }
-  } catch (e) {
-    console.error("[gateway] starter scaffold failed (non-fatal):", e?.message || e);
+    return false;
+  } catch {
+    return false;
   }
+}
+
+function doInit() {
+  // init directly inside VIDEO_DIR so index.html lands where preview/render look
+  const r = { code: 0, stdout: "", stderr: "" };
+  try {
+    const out = execFileSync("npx", ["--yes", "hyperframes", "init", "--yes"], {
+      cwd: VIDEO_DIR,
+      timeout: 180000,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    r.stdout = String(out || "");
+  } catch (e) {
+    r.code = e?.status ?? 1;
+    r.stdout = String(e?.stdout || "");
+    r.stderr = String(e?.stderr || e?.message || "");
+  }
+  r.after = fs.readdirSync(VIDEO_DIR);
+  return r;
+}
+
+function ensureStarter() {
+  if (hasComposition()) {
+    console.log("[gateway] composition found, skipping init");
+    return;
+  }
+  console.log("[gateway] /app/video has no composition — running `hyperframes init`...");
+  const r = doInit();
+  console.log(`[gateway] init code=${r.code} files=${JSON.stringify(r.after)}`);
+  if (r.stdout) console.log(`[gateway] init stdout: ${r.stdout.slice(-2000)}`);
+  if (r.stderr) console.error(`[gateway] init stderr: ${r.stderr.slice(-2000)}`);
 }
 
 ensureStarter();
@@ -103,7 +130,7 @@ const server = http.createServer(async (req, res) => {
 
   if (url.pathname === "/" || url.pathname === "/health") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", service: "hyperframes-dokploy", preview: "/preview/", renders: "/renders/", doctor: "/api/doctor", render: "POST /api/render" }));
+    res.end(JSON.stringify({ status: "ok", service: "hyperframes-dokploy", preview: "/preview/", renders: "/renders/", doctor: "/api/doctor", render: "POST /api/render", init: "POST /api/init" }));
     return;
   }
 
@@ -114,7 +141,20 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // manual scaffold trigger: POST /api/init
+  if (url.pathname === "/api/init" && req.method === "POST") {
+    const r = doInit();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ code: r.code, files: r.after, stdout: String(r.stdout).slice(-4000), stderr: String(r.stderr).slice(-4000) }));
+    return;
+  }
+
   if (url.pathname === "/api/render" && req.method === "POST") {
+    if (!hasComposition()) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "no composition in /app/video — POST /api/init first", files: fs.readdirSync(VIDEO_DIR) }));
+      return;
+    }
     const output = (url.searchParams.get("output") || `render-${Date.now()}.mp4`).replace(/[^a-zA-Z0-9._-]/g, "_");
     const outAbs = path.join(RENDERS_DIR, output);
     console.log(`[gateway] render → ${outAbs}`);
