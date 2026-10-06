@@ -11,6 +11,8 @@ services:
     image: hyperframes-dokploy:latest
     container_name: hyperframes-dokploy
     restart: unless-stopped
+    # Chrome needs >=256MB shm (doctor warns at 64MB default)
+    shm_size: 512m
     environment:
       PORT: ${PORT:-3002}
       PREVIEW_PORT: ${PREVIEW_PORT:-3102}
