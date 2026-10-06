@@ -2,8 +2,9 @@
  * hyperframes-dokploy gateway.
  * Traefik/Dokploy-ready: listens on 0.0.0.0:${PORT}, health on / and /health.
  * Spawns `npx hyperframes preview --port ${PREVIEW_PORT}` (binds 127.0.0.1
- * upstream) and reverse-proxies it under /preview/. Local Docker render only:
- * POST /api/render runs `npx hyperframes render` inside /app/video.
+ * upstream) and serves it at /preview/ plus the root-level asset paths the
+ * studio HTML references with absolute URLs (/assets/*, /favicon.svg,
+ * /api/projects/*). Local Docker render only.
  * No Vercel/Cloudflare/Modal/Lambda. No API keys.
  */
 import http from "node:http";
@@ -97,8 +98,11 @@ function runCmd(cmd, args, opts = {}) {
   });
 }
 
-function proxy(req, res, prefix = "/preview") {
-  const targetPath = req.url.slice(prefix.length) || "/";
+// Reverse proxy to the preview server.
+// stripPrefix: "/preview" → forwards path without prefix; "" → forwards as-is
+// (for root-level studio asset paths: /assets/*, /favicon.svg, /api/projects/*).
+function proxy(req, res, stripPrefix = "/preview") {
+  const targetPath = stripPrefix ? (req.url.slice(stripPrefix.length) || "/") : req.url;
   const opts = {
     host: "127.0.0.1",
     port: PREVIEW_PORT,
@@ -115,6 +119,18 @@ function proxy(req, res, prefix = "/preview") {
     res.end(JSON.stringify({ error: "preview not ready", detail: e.message }));
   });
   req.pipe(preq);
+}
+
+// Studio HTML references these with absolute URLs — forward them to preview.
+function isStudioAsset(pathname) {
+  return (
+    pathname.startsWith("/assets/") ||
+    pathname === "/favicon.svg" ||
+    pathname === "/favicon.ico" ||
+    pathname.startsWith("/api/projects/") ||
+    pathname.startsWith("/blocks/") ||
+    pathname.startsWith("/fonts/")
+  );
 }
 
 function serveFile(res, filePath, contentType = "video/mp4") {
@@ -179,6 +195,12 @@ const server = http.createServer(async (req, res) => {
 
   if (url.pathname === "/preview" || url.pathname.startsWith("/preview/")) {
     proxy(req, res, "/preview");
+    return;
+  }
+
+  // studio absolute-URL assets → preview server (fixes blank page)
+  if (isStudioAsset(url.pathname)) {
+    proxy(req, res, "");
     return;
   }
 
