@@ -1,0 +1,41 @@
+# HyperFrames on Dokploy — local Docker render only
+# No Vercel/Cloudflare/Modal/Lambda. No API keys.
+# Build: docker compose build | Up: docker compose up -d
+name: hyperframes-dokploy
+
+services:
+  hyperframes:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hyperframes-dokploy:latest
+    container_name: hyperframes-dokploy
+    restart: unless-stopped
+    environment:
+      PORT: ${PORT:-3002}
+      PREVIEW_PORT: ${PREVIEW_PORT:-3102}
+      PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium
+      PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
+      CONTAINER: "true"
+      HYPERFRAMES_CHROME_PATH: /opt/chrome/chrome-headless-shell
+      PRODUCER_HEADLESS_SHELL_PATH: /opt/chrome/chrome-headless-shell
+    expose:
+      - "3002"
+    ports:
+      - "${PORT:-3002}:3002"
+    volumes:
+      - ./my-video:/app/video
+      - ./renders:/app/renders
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$${PORT:-3002}/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    networks:
+      - dokploy-network
+
+networks:
+  dokploy-network:
+    external: true
+    name: dokploy-network
